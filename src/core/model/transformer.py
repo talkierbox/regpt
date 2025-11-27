@@ -12,7 +12,7 @@ class DecoderTransformer(nn.Module):
         self.d_model = d_model
         self.tok_emb = nn.Embedding(alphabet_size, d_model)
 
-        self.mha_blocks = nn.ModuleList([MultiheadSelfAttention(num_heads=num_heads, d_model=d_model, dropout=dropout) for _ in range(attention_block_count)])
+        self.mha_blocks = nn.ModuleList([MultiheadSelfAttention(num_heads=num_heads, d_model=d_model, dropout=dropout, mask=True) for _ in range(attention_block_count)])
         self.ff_blocks = nn.ModuleList([FeedForward([d_model, 2 * d_model, 2 * d_model, d_model], dropout=dropout) for _ in range(attention_block_count)])
 
         self.projection = nn.Linear(d_model, alphabet_size)

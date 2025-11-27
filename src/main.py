@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 
 from core.model.transformer import DecoderTransformer
+# TODO: Validation split
 
 # Add project root to path for imports
 _PROJECT_ROOT = Path(__file__).parent.parent
@@ -26,7 +27,7 @@ DEVICE = 'cuda' if torch.cuda.is_available() else 'mps' if torch.mps.is_availabl
 RANDOM_SEED = 16
 
 # Training
-EPOCHS = 15
+EPOCHS = 10
 BATCH_SIZE = 32
 LR = 1e-4
 
@@ -35,7 +36,7 @@ BLOCK_SIZE = 128
 
 # Model Architecture
 D_MODEL = 32
-ATTENTION_BLOCKS = 6
+ATTENTION_BLOCKS = 4
 NUM_HEADS = 4
 DROPOUT = 0.15
 
