@@ -29,10 +29,13 @@ class MultiheadSelfAttention(nn.Module):
         A = ((Q @ K.mT) / (self.d_k ** 0.5))
 
         if self.use_mask:
-            mask = torch.triu(torch.ones(seq_len, seq_len, device=A.device, dtype=A.dtype), diagonal=1) * float('-inf')            
+            mask = torch.triu(
+                torch.full((seq_len, seq_len), float('-inf'), device=A.device),
+                diagonal=1
+            )
             A = A + mask
 
-        A =  self.dropout(softmax(A, dim=-1)) @ V
+        A = self.dropout(softmax(A, dim=-1)) @ V
 
         # A is of shape [B, n_heads, seq_len, d_k]
         A = A.transpose(1, 2) # [B, seq_len, n_heads, d_k]
