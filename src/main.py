@@ -8,6 +8,7 @@ _PROJECT_ROOT = Path(__file__).parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+import math
 import torch
 import random
 import numpy as np
@@ -25,7 +26,7 @@ DEVICE = 'cuda' if torch.cuda.is_available() else 'mps' if torch.mps.is_availabl
 RANDOM_SEED = 16
 
 # Training
-EPOCHS = 50
+EPOCHS = 15
 BATCH_SIZE = 32
 LR = 1e-4
 
@@ -33,10 +34,10 @@ LR = 1e-4
 BLOCK_SIZE = 128
 
 # Model Architecture
-D_MODEL = 64
+D_MODEL = 32
 ATTENTION_BLOCKS = 6
-NUM_HEADS = 8
-DROPOUT = 0.1
+NUM_HEADS = 4
+DROPOUT = 0.15
 
 # Logging
 EXPERIMENT_NAME = "transformer_training"
@@ -66,6 +67,13 @@ logger.log(f"Epochs: {EPOCHS} | Batch Size: {BATCH_SIZE} | Block Size: {BLOCK_SI
 logger.log(f"Learning Rate: {LR} | Alphabet Size: {alphabet_size}", level="info")
 logger.log(f"Model: d_model={D_MODEL}, attention_blocks={ATTENTION_BLOCKS}, num_heads={NUM_HEADS}", level="info")
 
+# Model stats
+num_params = sum(p.numel() for p in model.parameters())
+num_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+random_baseline = math.log(alphabet_size)
+logger.log(f"Model Parameters: {num_params:,} total ({num_trainable:,} trainable)", level="info")
+logger.log(f"Random baseline loss: {random_baseline:.2f} (perplexity: {alphabet_size})", level="info")
+
 # Export config
 config = {
     "device": DEVICE,
@@ -78,7 +86,9 @@ config = {
     "attention_block_count": ATTENTION_BLOCKS,
     "num_heads": NUM_HEADS,
     "dropout": DROPOUT,
-    "random_seed": RANDOM_SEED
+    "random_seed": RANDOM_SEED,
+    "num_parameters": num_params,
+    "random_baseline_loss": random_baseline,
 }
 logger.export_json(config, "training_config")
 
@@ -118,23 +128,28 @@ for epoch in range(EPOCHS):
             epoch_loss += loss.item()
             num_batches += 1
             
-            # Update tqdm with current loss
-            pbar.set_postfix(loss=f"{loss.item():.4f}")
+            # Update tqdm with current loss and perplexity
+            pbar.set_postfix(loss=f"{loss.item():.4f}", ppl=f"{math.exp(loss.item()):.2f}")
     
-    # Calculate average epoch loss
+    # Calculate average epoch loss and perplexity
     avg_epoch_loss = epoch_loss / num_batches
+    avg_epoch_ppl = math.exp(avg_epoch_loss)
     epoch_losses.append(avg_epoch_loss)
     
     # Log epoch summary
     logger.log_metrics({
         "epoch_loss": avg_epoch_loss,
+        "epoch_perplexity": avg_epoch_ppl,
     }, step=epoch, prefix="epoch")
     
-    logger.log(f"Epoch {epoch + 1} completed - Avg Loss: {avg_epoch_loss:.4f}", level="success")
+    logger.log(f"Epoch {epoch + 1} completed - Loss: {avg_epoch_loss:.4f} | Perplexity: {avg_epoch_ppl:.2f}", level="success")
 
 # Training complete
 logger.header("Training Complete")
-logger.log(f"Best epoch loss: {min(epoch_losses):.4f} (epoch {epoch_losses.index(min(epoch_losses)) + 1})", level="success")
+best_loss = min(epoch_losses)
+best_epoch = epoch_losses.index(best_loss) + 1
+best_ppl = math.exp(best_loss)
+logger.log(f"Best epoch: {best_epoch} - Loss: {best_loss:.4f} | Perplexity: {best_ppl:.2f}", level="success")
 
 # Export metrics and charts
 logger.export_metrics("training_metrics")
