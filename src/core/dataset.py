@@ -15,16 +15,22 @@ from src.core.load_files import fetch_data_files
 from src.core.tokenizer import Tokenizer
 
 
-def fetch_dataset(block_size: int = 128, path_extension: Optional[Path] = None) -> tuple[Dataset, int]:
+def fetch_dataset(block_size: int = 128, path_extension: Optional[Path] = None, val_precentage: float = 0.1) -> tuple[Dataset, int]:
     # Returns the dataset as well as the alphabet size
 
     data_files = fetch_data_files(path_extension)
     all_content: str = "".join(datafile['file_content'] for datafile in data_files.values())
     tokenizer = Tokenizer(all_content)
 
-    dataset = TokenDataset(tokenizer.encode(all_content), block_size)
+    train_portion = int(len(all_content) * (1 - val_precentage))
 
-    return dataset, len(tokenizer.alphabet)
+    train_data = all_content[:train_portion]
+    val_data = all_content[train_portion:]
+
+    train_dataset = TokenDataset(tokenizer.encode(train_data), block_size)
+    val_dataset = TokenDataset(tokenizer.encode(val_data), block_size)
+
+    return train_dataset, val_dataset, len(tokenizer.alphabet)
    
 
 # Dataset for next-token prediction

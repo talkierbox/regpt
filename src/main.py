@@ -29,14 +29,96 @@ RANDOM_SEED = 16
 # Training
 EPOCHS = 10
 BATCH_SIZE = 32
-LR = 1e-4
+LR = 3e-4
 
 # Data
 BLOCK_SIZE = 128
 
+
+def _reshape_for_loss(logits: torch.Tensor, targets: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Flatten logits/targets so CrossEntropyLoss operates over vocab dimension.
+    """
+    B, seq_len, vocab_size = logits.shape
+    return logits.reshape(B * seq_len, vocab_size), targets.reshape(B * seq_len)
+
+
+def train_one_epoch(
+    model: DecoderTransformer,
+    dataloader: DataLoader,
+    criterion: CrossEntropyLoss,
+    optimizer: AdamW,
+    device: torch.device,
+    epoch_idx: int,
+    total_epochs: int,
+    logger: ExperimentLogger,
+) -> float:
+    model.train()
+    running_loss = 0.0
+    batch_count = 0
+
+    progress = tqdm.tqdm(dataloader, desc=f"Train {epoch_idx}/{total_epochs}", leave=False)
+    for x, y in progress:
+        x, y = x.to(device), y.to(device)
+
+        logits = model(x)
+        logits, targets = _reshape_for_loss(logits, y)
+        loss = criterion(logits, targets)
+
+        loss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
+
+        running_loss += loss.item()
+        batch_count += 1
+        progress.set_postfix(loss=f"{loss.item():.4f}", ppl=f"{math.exp(loss.item()):.2f}")
+
+    if batch_count == 0:
+        raise RuntimeError(
+            "Train dataloader produced zero batches. Add more data or reduce BLOCK_SIZE."
+        )
+
+    return running_loss / batch_count
+
+
+@torch.no_grad()
+def validate_one_epoch(
+    model: DecoderTransformer,
+    dataloader: DataLoader,
+    criterion: CrossEntropyLoss,
+    device: torch.device,
+    epoch_idx: int,
+    total_epochs: int,
+    logger: ExperimentLogger,
+) -> float:
+    model.eval()
+    running_loss = 0.0
+    batch_count = 0
+
+    progress = tqdm.tqdm(dataloader, desc=f"Val {epoch_idx}/{total_epochs}", leave=False)
+    for x, y in progress:
+        x, y = x.to(device), y.to(device)
+
+        logits = model(x)
+        logits, targets = _reshape_for_loss(logits, y)
+        loss = criterion(logits, targets)
+
+        running_loss += loss.item()
+        batch_count += 1
+        progress.set_postfix(loss=f"{loss.item():.4f}", ppl=f"{math.exp(loss.item()):.2f}")
+
+    if batch_count == 0:
+        logger.warning(
+            "Validation dataloader produced zero batches. Validation metrics will be NaN."
+        )
+        return float("nan")
+
+    return running_loss / batch_count
+
+
 # Model Architecture
 D_MODEL = 32
-ATTENTION_BLOCKS = 4
+ATTENTION_BLOCKS = 6
 NUM_HEADS = 4
 DROPOUT = 0.15
 
@@ -48,8 +130,9 @@ np.random.seed(RANDOM_SEED)
 torch.manual_seed(RANDOM_SEED)
 
 torch.device(DEVICE)
-dataset, alphabet_size = fetch_dataset(BLOCK_SIZE)
-dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
+train_dataset, val_dataset, alphabet_size = fetch_dataset(BLOCK_SIZE)
+train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+val_dataloader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
 model = DecoderTransformer(
     alphabet_size=alphabet_size,
@@ -97,71 +180,105 @@ criterion = CrossEntropyLoss()
 optim = AdamW(model.parameters(), lr=LR)
 
 logger.header("Starting Training")
-epoch_losses = []
+train_losses = []
+val_losses = []
 
-for epoch in range(EPOCHS):
-    model.train()
-    epoch_loss = 0.0
-    num_batches = 0
-    
-    with logger.timer(f"Epoch {epoch + 1}/{EPOCHS}"):
-        pbar = tqdm.tqdm(dataloader, desc=f"Epoch {epoch+1}", leave=False)
-        for x, y in pbar:
-            x, y = x.to(DEVICE), y.to(DEVICE)
-            
-            # Forward pass
-            logits = model(x)  # [B, seq_len, alphabet_size]
-            B, seq_len, vocab_size = logits.shape
-            
-            # Reshape for loss calculation
-            logits = logits.reshape(B * seq_len, vocab_size)
-            y = y.flatten()
-            
-            # Compute loss
-            loss = criterion(logits, y)
-            
-            # Backward pass
-            loss.backward()
-            optim.step()
-            optim.zero_grad()
-            
-            # Track metrics
-            epoch_loss += loss.item()
-            num_batches += 1
-            
-            # Update tqdm with current loss and perplexity
-            pbar.set_postfix(loss=f"{loss.item():.4f}", ppl=f"{math.exp(loss.item()):.2f}")
-    
-    # Calculate average epoch loss and perplexity
-    avg_epoch_loss = epoch_loss / num_batches
-    avg_epoch_ppl = math.exp(avg_epoch_loss)
-    epoch_losses.append(avg_epoch_loss)
-    
-    # Log epoch summary
-    logger.log_metrics({
-        "epoch_loss": avg_epoch_loss,
-        "epoch_perplexity": avg_epoch_ppl,
-    }, step=epoch, prefix="epoch")
-    
-    logger.log(f"Epoch {epoch + 1} completed - Loss: {avg_epoch_loss:.4f} | Perplexity: {avg_epoch_ppl:.2f}", level="success")
+for epoch in range(1, EPOCHS + 1):
+    with logger.timer(f"Epoch {epoch}/{EPOCHS}"):
+        train_loss = train_one_epoch(
+            model,
+            train_dataloader,
+            criterion,
+            optim,
+            DEVICE,
+            epoch,
+            EPOCHS,
+            logger,
+        )
+
+    val_loss = validate_one_epoch(
+        model,
+        val_dataloader,
+        criterion,
+        DEVICE,
+        epoch,
+        EPOCHS,
+        logger,
+    )
+
+    train_losses.append(train_loss)
+    val_losses.append(val_loss)
+
+    train_ppl = math.exp(train_loss)
+    val_ppl = math.exp(val_loss) if math.isfinite(val_loss) else float("nan")
+
+    logger.log_metrics(
+        {
+            "loss": train_loss,
+            "perplexity": train_ppl,
+        },
+        step=epoch,
+        prefix="train",
+    )
+
+    logger.log_metrics(
+        {
+            "loss": val_loss,
+            "perplexity": val_ppl,
+        },
+        step=epoch,
+        prefix="val",
+    )
+
+    logger.log(
+        f"Epoch {epoch}/{EPOCHS} "
+        f"- Train Loss: {train_loss:.4f} (ppl {train_ppl:.2f}) "
+        f"| Val Loss: {val_loss:.4f} (ppl {val_ppl:.2f})",
+        level="success",
+    )
 
 # Training complete
 logger.header("Training Complete")
-best_loss = min(epoch_losses)
-best_epoch = epoch_losses.index(best_loss) + 1
+finite_val_losses = [loss for loss in val_losses if math.isfinite(loss)]
+if finite_val_losses:
+    best_loss = min(finite_val_losses)
+    best_epoch = val_losses.index(best_loss) + 1
+    best_split = "validation"
+else:
+    best_loss = min(train_losses)
+    best_epoch = train_losses.index(best_loss) + 1
+    best_split = "training"
 best_ppl = math.exp(best_loss)
-logger.log(f"Best epoch: {best_epoch} - Loss: {best_loss:.4f} | Perplexity: {best_ppl:.2f}", level="success")
+logger.log(
+    f"Best {best_split} epoch: {best_epoch} - Loss: {best_loss:.4f} | Perplexity: {best_ppl:.2f}",
+    level="success",
+)
 
 # Export metrics and charts
 logger.export_metrics("training_metrics")
-logger.plot_line(
-    list(range(1, EPOCHS + 1)),
-    epoch_losses,
-    "training_loss",
-    title="Training Loss Over Epochs",
-    xlabel="Epoch",
-    ylabel="Loss"
-)
+epoch_axis = list(range(1, EPOCHS + 1))
+plot_data = {"Train Loss": (epoch_axis, train_losses)}
+
+if any(math.isfinite(loss) for loss in val_losses):
+    plot_data["Val Loss"] = (epoch_axis, val_losses)
+
+if len(plot_data) == 1:
+    logger.plot_line(
+        epoch_axis,
+        train_losses,
+        "training_loss",
+        title="Training Loss Over Epochs",
+        xlabel="Epoch",
+        ylabel="Loss"
+    )
+else:
+    logger.plot_lines(
+        plot_data,
+        "training_loss",
+        title="Training vs Validation Loss",
+        xlabel="Epoch",
+        ylabel="Loss"
+    )
 logger.plot_metrics()
 
 # Export trained model (use torch.save for PyTorch models)
