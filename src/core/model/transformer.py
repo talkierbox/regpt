@@ -1,3 +1,4 @@
+from mpmath.ctx_mp_python import return_mpf
 import torch
 import numpy as np
 
@@ -7,7 +8,7 @@ from src.core.model.feedforward import FeedForward
 
 class DecoderTransformer(nn.Module):
 
-    def __init__(self, alphabet_size: int, d_model: int = 64, attention_block_count: int = 6, num_heads: int = 8, dropout = 0.1):
+    def __init__(self, alphabet_size: int, d_model: int = 64, attention_block_count: int = 6, num_heads: int = 8, dropout: float = 0.1, max_seq_len: int = 256):
         super().__init__()
         self.d_model = d_model
         self.tok_emb = nn.Embedding(alphabet_size, d_model)
@@ -20,11 +21,18 @@ class DecoderTransformer(nn.Module):
         self.ln1_blocks = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(attention_block_count)])
         self.ln2_blocks = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(attention_block_count)])
 
+        self.max_seq_len = max_seq_len
+
+        self.register_buffer("pos_embeddings", self._generate_pos_embeddings(torch.device('cpu')), persistent=True)
+
     def forward(self, x: torch.Tensor):
         B, seq_len = x.shape
 
+        if seq_len > self.max_seq_len:
+            raise ValueError(f"Sequence length {seq_len} is greater than the maximum sequence length {self.max_seq_len}")
+
         x = self.tok_emb(x) 
-        x = x + self._get_pos_embeddings(B, seq_len, x.device) # [B seq_len d_model]
+        x = x + self._fetch_pos_embeddings(B, seq_len, x.device) # [B seq_len d_model]
 
         # Run MHA blocks
         cur_z = x
@@ -38,12 +46,14 @@ class DecoderTransformer(nn.Module):
         # Do not run the last softmax. Only run the softmax on inference when generating tokens
         return cur_z
 
-    # TODO: Use a buffer for these in the future so that we don't have to recompute these every single time
-    def _get_pos_embeddings(self, B: int, seq_len: int, device: torch.device) -> torch.Tensor:
+    def _fetch_pos_embeddings(self, B: int, seq_len: int, device: torch.device) -> torch.Tensor:
+        return self.pos_embeddings[:, :seq_len, :].expand(B, seq_len, -1).to(device)
+
+    def _generate_pos_embeddings(self,  device: torch.device) -> torch.Tensor:
         # Returns a tensor of positional embeddings of shape [B seq_len d_model]
         return torch.stack([
-            self._get_embedding_for_row(i) for i in range(seq_len)
-        ]).float().to(device).unsqueeze(0).expand(B, -1, -1)
+            self._get_embedding_for_row(i) for i in range(self.max_seq_len)
+        ]).float().to(device).unsqueeze(0)
 
     def _get_embedding_for_row(self, pos: int) -> torch.Tensor:
         # Generate one row embedding for row_idx of length d_model

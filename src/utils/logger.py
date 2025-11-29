@@ -346,7 +346,14 @@ class ExperimentLogger:
         with open(filepath, "w", newline="") as f:
             if data and isinstance(data[0], dict):
                 # List of dictionaries
-                headers = headers or list(data[0].keys())
+                if headers is None:
+                    headers = []
+                    seen = set()
+                    for row in data:
+                        for key in row.keys():
+                            if key not in seen:
+                                headers.append(key)
+                                seen.add(key)
                 writer = csv.DictWriter(f, fieldnames=headers)
                 writer.writeheader()
                 writer.writerows(data)
